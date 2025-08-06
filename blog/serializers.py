@@ -1,47 +1,158 @@
 from rest_framework import serializers
-from blog.models import Profile, Follow, Post
 from django.contrib.auth import get_user_model
-from user.serializers import UserSerializer
+from blog.models import Post, Comment, Profile, Follow, Like
 
 User = get_user_model()
 
 
-class UserPublicSerializer(serializers.ModelSerializer):
+class UserBasicSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id", "email"]
+        fields = ("id", "email", "first_name", "last_name")
 
 
 class ProfileSerializer(serializers.ModelSerializer):
-    user = UserPublicSerializer(read_only=True)
+    user = UserBasicSerializer(read_only=True)
+    followers_count = serializers.SerializerMethodField()
+    following_count = serializers.SerializerMethodField()
+    posts_count = serializers.SerializerMethodField()
+    is_following = serializers.SerializerMethodField()
 
     class Meta:
         model = Profile
-        fields = ["id", "user", "profile_picture", "bio", "location", "birth_date"]
+        fields = [
+            "id",
+            "user",
+            "profile_image",
+            "bio",
+            "location",
+            "birth_date",
+            "created_at",
+            "followers_count",
+            "following_count",
+            "posts_count",
+            "is_following"
+        ]
+        read_only_fields = ["id", "created_at", "user"]
+
+    def get_followers_count(self, obj):
+        return obj.user.followers.count()
+
+    def get_following_count(self, obj):
+        return obj.user.following.count()
+
+    def get_posts_count(self, obj):
+        return obj.user.posts.count()
+
+    def get_is_following(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return Follow.objects.filter(
+                follower=request.user,
+                following=obj.user
+            ).exists()
+        return False
+
+    def validate(self, data):
+        """Custom validation for profile data"""
+        if "birth_date" in data and data["birth_date"]:
+            from django.utils import timezone
+            if data["birth_date"] > timezone.now().date():
+                raise serializers.ValidationError({
+                    "birth_date": "Birth date cannot be in the future"
+                })
+        return data
 
 
-class FollowSerializer(serializers.ModelSerializer):
-    follower = UserPublicSerializer(read_only=True)
-    following = UserPublicSerializer(read_only=True)
+class CommentSerializer(serializers.ModelSerializer):
+    author = UserBasicSerializer(read_only=True)
+    replies = serializers.SerializerMethodField()
 
     class Meta:
-        model = Follow
-        fields = ["id", "follower", "following", "created_at"]
+        model = Comment
+        fields = [
+            "id",
+            "author",
+            "content",
+            "created_at",
+            "updated_at",
+            "parent",
+            "replies"
+        ]
+        read_only_fields = ["id", "created_at", "updated_at", "author"]
+
+    def get_replies(self, obj):
+        # Only include replies if they exist and we're not too deep
+        if hasattr(obj, "replies") and obj.replies.exists():
+            # Limit nesting depth to avoid performance issues
+            depth = self.context.get("depth", 0)
+            if depth < 2:  # Max 2 levels of nesting
+                context = self.context.copy()
+                context["depth"] = depth + 1
+                serializer = CommentSerializer(
+                    obj.replies.all(),
+                    many=True,
+                    context=context
+                )
+                return serializer.data
+        return []
 
 
 class PostSerializer(serializers.ModelSerializer):
-    author = UserSerializer(read_only=True)
-    likes_count = serializers.IntegerField(source="likes.count", read_only=True)
+    author = UserBasicSerializer(read_only=True)
+    likes_count = serializers.SerializerMethodField()
+    comments_count = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
         fields = [
             "id",
             "author",
+            "title",
             "content",
-            "image",
             "created_at",
+            "updated_at",
+            "tags",
             "likes_count",
-            "scheduled_time",
-            "is_published",
+            "comments_count",
+            "is_liked"
         ]
+        read_only_fields = ["id", "created_at", "updated_at", "author"]
+
+    def get_likes_count(self, obj):
+        return obj.likes.count()
+
+    def get_comments_count(self, obj):
+        return obj.comments.count()
+
+    def get_is_liked(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return Like.objects.filter(
+                user=request.user,
+                post=obj
+            ).exists()
+
+
+class PostDetailSerializer(PostSerializer):
+    comments = CommentSerializer(many=True, read_only=True)
+
+    class Meta(PostSerializer.Meta):
+        fields = PostSerializer.Meta.fields + ["comments"]
+
+
+class FollowerSerializer(serializers.ModelSerializer):
+    follower = UserBasicSerializer(read_only=True)
+
+    class Meta:
+        model = Follow
+        fields = ("follower", "created_at")
+
+
+class FollowingSerializer(serializers.ModelSerializer):
+    following = UserBasicSerializer(read_only=True)
+
+    class Meta:
+        model = Follow
+        fields = ("following", "created_at")

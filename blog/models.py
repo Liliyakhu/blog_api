@@ -1,70 +1,164 @@
 import os
 import uuid
 
-from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.conf import settings
 from django.utils.text import slugify
-
-
-User = get_user_model()
+from django.utils import timezone
 
 
 def profile_image_file_path(instance, filename):
     _, extension = os.path.splitext(filename)
-    filename = f"{slugify(instance.user)}-{uuid.uuid4()}{extension}"
-
+    filename = f"{slugify(instance.user.email)}-{uuid.uuid4()}{extension}"
     return os.path.join("uploads/profiles/", filename)
 
 
-class Profile(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
-    profile_picture = models.ImageField(
-        upload_to=profile_image_file_path, blank=True, null=True
-    )
-    bio = models.TextField(blank=True)
-    location = models.CharField(max_length=100, blank=True)
-    birth_date = models.DateField(null=True, blank=True)
+def validate_image_size(image):
+    """Validate image file size (max 5MB)"""
+    if image.size > 5 * 1024 * 1024:
+        raise ValidationError("Image file too large ( > 5MB )")
 
-    # def __str__(self):
-    #     return f"{self.user.email} profile"
+
+class Profile(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="profile",
+    )
+    profile_image = models.ImageField(
+        upload_to=profile_image_file_path,
+        blank=True,
+        null=True,
+        validators=[validate_image_size],
+    )
+    bio = models.TextField(blank=True, max_length=500)
+    location = models.CharField(max_length=100, blank=True)
+    birth_date = models.DateField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
 
     def __str__(self):
-        return f"{self.user.get_username()} profile"
+        return f"{self.user.email}'s profile"
+
+    def clean(self):
+        """Custom validation"""
+        if self.birth_date and self.birth_date > timezone.now().date():
+            raise ValidationError("Birth date cannot be in the future")
+
+
+class Post(models.Model):
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="posts"
+    )
+    title = models.CharField(max_length=200)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_published = models.BooleanField(default=True)
+    tags = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Comma separated list of tags"
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["-created_at"]),
+            models.Index(fields=["author"]),
+            models.Index(fields=["is_published"]),
+            models.Index(fields=["tags"]),
+        ]
+
+    def __str__(self):
+        return self.title
+
+    @property
+    def comment_count(self):
+        return self.comments.count()
+
+
+class Comment(models.Model):
+    post = models.ForeignKey(
+        Post,
+        on_delete=models.CASCADE,
+        related_name="comments"
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="comments"
+    )
+    content = models.TextField(max_length=1000)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    parent = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="replies"
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"Comment by {self.author.email} on {self.post.title}"
 
 
 class Follow(models.Model):
+    """User following system"""
     follower = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name="following"
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="following"
     )
     following = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name="followers"
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="followers"
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         unique_together = ("follower", "following")
+        indexes = [
+            models.Index(fields=["follower"]),
+            models.Index(fields=["following"]),
+        ]
 
-    def __str__(self):
-        return f"{self.follower} follows {self.following}"
-
-
-def post_image_file_path(instance, filename):
-    _, extension = os.path.splitext(filename)
-    filename = f"{slugify(instance.author)}-{uuid.uuid4()}{extension}"
-
-    return os.path.join("uploads/profiles/", filename)
+    def clean(self):
+        if self.follower == self.following:
+            raise ValidationError("Users cannot follow themselves")
 
 
-class Post(models.Model):
-    author = models.ForeignKey(User, on_delete=models.CASCADE, related_name="posts")
-    content = models.TextField()
-    image = models.ImageField(upload_to=post_image_file_path, null=True, blank=True)
+class Like(models.Model):
+    """Post likes system"""
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="likes"
+    )
+    post = models.ForeignKey(
+        Post,
+        on_delete=models.CASCADE,
+        related_name="likes"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
-    scheduled_time = models.DateTimeField(null=True, blank=True)
-    is_published = models.BooleanField(default=True)
 
-    def extract_hashtags(self):
-        return [word[1:] for word in self.content.split() if word.startswith("#")]
-
-    def __str__(self):
-        return f"Post by {self.author.email} at {self.created_at}"
+    class Meta:
+        unique_together = ("user", "post")
+        indexes = [
+            models.Index(fields=["post"]),
+        ]
