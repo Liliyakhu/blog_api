@@ -10,6 +10,14 @@ class UserBasicSerializer(serializers.ModelSerializer):
         model = User
         fields = ("id", "email", "first_name", "last_name")
 
+    def get_profile_image(self, obj):
+        request = self.context.get("request")
+        if hasattr(obj, "profile") and obj.profile.profile_image:
+            if request:
+                return request.build_absolute_uri(obj.profile.profile_image.url)
+            return obj.profile.profile_image.url
+        return None
+
 
 class ProfileSerializer(serializers.ModelSerializer):
     user = UserBasicSerializer(read_only=True)
@@ -31,7 +39,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             "followers_count",
             "following_count",
             "posts_count",
-            "is_following"
+            "is_following",
         ]
         read_only_fields = ["id", "created_at", "user"]
 
@@ -48,8 +56,7 @@ class ProfileSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
             return Follow.objects.filter(
-                follower=request.user,
-                following=obj.user
+                follower=request.user, following=obj.user
             ).exists()
         return False
 
@@ -57,10 +64,11 @@ class ProfileSerializer(serializers.ModelSerializer):
         """Custom validation for profile data"""
         if "birth_date" in data and data["birth_date"]:
             from django.utils import timezone
+
             if data["birth_date"] > timezone.now().date():
-                raise serializers.ValidationError({
-                    "birth_date": "Birth date cannot be in the future"
-                })
+                raise serializers.ValidationError(
+                    {"birth_date": "Birth date cannot be in the future"}
+                )
         return data
 
 
@@ -77,7 +85,7 @@ class CommentSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "parent",
-            "replies"
+            "replies",
         ]
         read_only_fields = ["id", "created_at", "updated_at", "author"]
 
@@ -90,9 +98,7 @@ class CommentSerializer(serializers.ModelSerializer):
                 context = self.context.copy()
                 context["depth"] = depth + 1
                 serializer = CommentSerializer(
-                    obj.replies.all(),
-                    many=True,
-                    context=context
+                    obj.replies.all(), many=True, context=context
                 )
                 return serializer.data
         return []
@@ -116,7 +122,7 @@ class PostSerializer(serializers.ModelSerializer):
             "tags",
             "likes_count",
             "comments_count",
-            "is_liked"
+            "is_liked",
         ]
         read_only_fields = ["id", "created_at", "updated_at", "author"]
 
@@ -129,10 +135,7 @@ class PostSerializer(serializers.ModelSerializer):
     def get_is_liked(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            return Like.objects.filter(
-                user=request.user,
-                post=obj
-            ).exists()
+            return Like.objects.filter(user=request.user, post=obj).exists()
 
 
 class PostDetailSerializer(PostSerializer):
@@ -156,3 +159,15 @@ class FollowingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Follow
         fields = ("following", "created_at")
+
+
+class LikeSerializer(serializers.ModelSerializer):
+    """Serializer for Like model"""
+
+    user = UserBasicSerializer(read_only=True)
+    post_title = serializers.CharField(source="post.title", read_only=True)
+
+    class Meta:
+        model = Like
+        fields = ["id", "user", "post", "post_title", "created_at"]
+        read_only_fields = ["id", "user", "created_at"]
