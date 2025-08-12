@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from blog.models import Post, Comment, Profile, Follow, Like
 
 User = get_user_model()
@@ -117,14 +118,50 @@ class PostSerializer(serializers.ModelSerializer):
             "author",
             "title",
             "content",
+            "status",
             "created_at",
             "updated_at",
+            "scheduled_time",
+            "published_at",
             "tags",
+            "celery_task_id",
             "likes_count",
             "comments_count",
             "is_liked",
         ]
-        read_only_fields = ["id", "created_at", "updated_at", "author"]
+        read_only_fields = [
+            "id",
+            "created_at",
+            "updated_at",
+            "author",
+            "published_at",
+            "celery_task_id",
+        ]
+
+    def validate_scheduled_time(self, value):
+        """Validate scheduled time is in the future"""
+        if value and value <= timezone.now():
+            raise serializers.ValidationError("Scheduled time must be in the future.")
+        return value
+
+    def validate(self, data):
+        """Validate post data"""
+        status = data.get(
+            "status", self.instance.status if self.instance else Post.DRAFT
+        )
+        scheduled_time = data.get("scheduled_time")
+
+        if status == Post.SCHEDULED and not scheduled_time:
+            raise serializers.ValidationError(
+                "Scheduled time is required for scheduled posts."
+            )
+
+        if status != Post.SCHEDULED and scheduled_time:
+            raise serializers.ValidationError(
+                "Scheduled time should only be set for scheduled posts."
+            )
+
+        return data
 
     def get_likes_count(self, obj):
         return obj.likes.count()
@@ -136,6 +173,17 @@ class PostSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
             return Like.objects.filter(user=request.user, post=obj).exists()
+
+
+class SchedulePostSerializer(serializers.Serializer):
+    """Serializer for scheduling existing posts"""
+
+    scheduled_time = serializers.DateTimeField()
+
+    def validate_scheduled_time(self, value):
+        if value <= timezone.now():
+            raise serializers.ValidationError("Scheduled time must be in the future.")
+        return value
 
 
 class PostDetailSerializer(PostSerializer):

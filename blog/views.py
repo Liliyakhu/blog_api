@@ -7,6 +7,9 @@ from django.db import transaction
 from django.db.models import Q, Count, Prefetch
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
+from django.utils import timezone
+from celery import current_app
+from blog.tasks import publish_scheduled_post
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from drf_spectacular.utils import extend_schema
 from drf_spectacular.utils import OpenApiParameter
@@ -18,6 +21,7 @@ from blog.serializers import (
     ProfileSerializer,
     FollowerSerializer,
     FollowingSerializer,
+    SchedulePostSerializer,
 )
 
 
@@ -160,7 +164,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 | Q(tags__icontains=search)
             )
 
-        return queryset.filter(is_published=True)
+        return queryset.filter(status=Post.PUBLISHED).order_by("-created_at")
 
     def get_serializer_class(self):
         if self.action == "retrieve":
@@ -169,9 +173,122 @@ class PostViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         try:
-            serializer.save(author=self.request.user)
+            """Handle post creation with optional scheduling"""
+            post = serializer.save(author=self.request.user)
+
+            # If post is scheduled, create Celery task
+            if post.status == Post.SCHEDULED and post.scheduled_time:
+                self._schedule_post_task(post)
         except IntegrityError as e:
             raise DRFValidationError("Error creating post. Please try again.")
+
+    def perform_update(self, serializer):
+        """Handle post updates with schedule management"""
+        old_post = self.get_object()
+        post = serializer.save()
+
+        # Cancel existing task if it exists
+        if old_post.celery_task_id:
+            current_app.control.revoke(old_post.celery_task_id, terminate=True)
+
+        # Schedule new task if needed
+        if post.status == Post.SCHEDULED and post.scheduled_time:
+            self._schedule_post_task(post)
+        else:
+            post.celery_task_id = None
+            post.save()
+
+    def _schedule_post_task(self, post):
+        """Schedule a Celery task for the post"""
+        task = publish_scheduled_post.apply_async(
+            args=[post.id], eta=post.scheduled_time
+        )
+        post.celery_task_id = task.id
+        post.save()
+
+    @action(detail=True, methods=["post"])
+    def schedule(self, request, pk=None):
+        """Schedule an existing post"""
+        post = self.get_object()
+
+        if not post.can_be_scheduled():
+            return Response(
+                {"error": f"Cannot schedule post with status: {post.status}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = SchedulePostSerializer(data=request.data)
+        if serializer.is_valid():
+            # Cancel existing task if any
+            if post.celery_task_id:
+                current_app.control.revoke(post.celery_task_id, terminate=True)
+
+            # Update post
+            post.scheduled_time = serializer.validated_data["scheduled_time"]
+            post.status = Post.SCHEDULED
+
+            # Schedule task
+            self._schedule_post_task(post)
+
+            return Response(
+                {
+                    "message": "Post scheduled successfully",
+                    "scheduled_time": post.scheduled_time,
+                    "task_id": post.celery_task_id,
+                }
+            )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=["post"])
+    def cancel_schedule(self, request, pk=None):
+        """Cancel scheduled post"""
+        post = self.get_object()
+
+        if post.status != Post.SCHEDULED:
+            return Response(
+                {"error": "Post is not scheduled"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Cancel Celery task
+        if post.celery_task_id:
+            current_app.control.revoke(post.celery_task_id, terminate=True)
+
+        # Update post
+        post.status = Post.DRAFT
+        post.scheduled_time = None
+        post.celery_task_id = None
+        post.save()
+
+        return Response({"message": "Schedule cancelled successfully"})
+
+    @action(detail=True, methods=["post"])
+    def publish_now(self, request, pk=None):
+        """Immediately publish a post"""
+        post = self.get_object()
+
+        if post.status == Post.PUBLISHED:
+            return Response(
+                {"error": "Post is already published"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Cancel scheduled task if any
+        if post.celery_task_id:
+            current_app.control.revoke(post.celery_task_id, terminate=True)
+
+        # Publish immediately
+        post.status = Post.PUBLISHED
+        post.published_at = timezone.now()
+        post.celery_task_id = None
+        post.save()
+
+        return Response(
+            {
+                "message": "Post published successfully",
+                "published_at": post.published_at,
+            }
+        )
 
     def update(self, request, *args, **kwargs):
         post = self.get_object()

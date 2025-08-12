@@ -55,6 +55,8 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "rest_framework_simplejwt.token_blacklist",
     "debug_toolbar",
+    "django_celery_beat",
+    "django_celery_results",
     "user",
     "blog.apps.BlogConfig",
 ]
@@ -125,7 +127,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = "en-us"
 
-TIME_ZONE = "UTC"
+TIME_ZONE = "Europe/Kyiv"
 
 USE_I18N = True
 
@@ -158,9 +160,12 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": "100/day",
-        "user": "1000/day",  # Increased for better UX
-        "likes": "100/hour",  # Specific rate limit for likes
-        "comments": "50/hour",  # Specific rate limit for comments
+        "user": "1000/day",
+        "user_write": "200/day",  # Separate limit for write operations
+        "likes": "100/hour",
+        "comments": "50/hour",
+        "follow": "50/hour",
+        "posts": "20/hour",
     },
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -250,3 +255,22 @@ LOGGING = {
 # Create logs directory if it doesn't exist
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
+
+# Celery Configuration
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = os.environ.get(
+    "CELERY_RESULT_BACKEND", "redis://localhost:6379/0"
+)
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "Europe/Kyiv"
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60
+CELERY_ENABLE_UTC = True
+# Optional: Task result expiration
+CELERY_RESULT_EXPIRES = timedelta(hours=24)
+
+# Content sanitization settings
+BLEACH_ALLOWED_TAGS = ["p", "br", "strong", "em", "u", "ol", "ul", "li", "a"]
+BLEACH_ALLOWED_ATTRIBUTES = {"a": ["href", "title"]}

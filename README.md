@@ -23,15 +23,12 @@ and view profiles of other users.
 ### Follow/Unfollow:
 - Users are able to follow and unfollow other users 
 (how to check: 
-  - to follow - 
-http://localhost:8000/api/blog/follows/follow/ -> 
-paster { "user_id": 2 } in Content -> Post
-  - to unfollow - http://localhost:8000/api/blog/follows/unfollow/ ->
-paster { "user_id": 2 } in Content -> Post ).
+  - to follow - http://localhost:8000/api/blog/profiles/2/follow/ ->
+  - to unfollow - http://localhost:8000/api/blog/profiles/2/follow/ ->
 - Users are able to view the list of users they are following and the list of users following them 
 (
-  - following - http://localhost:8000/api/blog/follows/following/
-  - followers - http://localhost:8000/api/blog/follows/followers/).
+  - following - http://localhost:8000/api/blog/profiles/2/following/
+  - followers - http://localhost:8000/api/blog/profiles/2/followers/).
 
 ### Post Creation and Retrieval:
 - Users are able to create new posts with text content and optional media attachments (e.g., images). (Adding images is optional task)
@@ -48,27 +45,26 @@ Endpoint and Purpose:
 > GET /api/posts/id/ - Retrieve post by ID
 
 ### Likes and Comments (Optional):
-- Users should be able to like and unlike posts. 
-- Users should be able to view the list of posts they have liked. 
--  Users should be able to add comments to posts and view comments on posts.
+- Users are able to like and unlike posts. 
+- Users are able to view the list of posts they have liked. 
+-  Users are be able to add comments to posts and view comments on posts.
 
 ### Schedule Post creation using Celery (Optional):
-Add possibility to schedule Post creation (you can select the time to create the Post before creating of it).
+Added possibility to schedule Post creation (you can select the time to create the Post before creating of it).
 
 ### API Permissions:
-Only authenticated users should be able to perform actions such as creating posts, liking posts, and following/unfollowing users.
-Users should only be able to update and delete their own posts and comments.
-Users should only be able to update and delete their own profile.
+Only authenticated users are able to perform actions such as creating posts, liking posts, and following/unfollowing users.
+Only users are able to update and delete their own posts and comments.
+Only users are able to update and delete their own profile.
 
 ### API Documentation:
-The API should be well-documented with clear instructions on how to use each endpoint.
-The documentation should include sample API requests and responses for different endpoints.
+The API is documented with clear instructions on how to use each endpoint.
+The documentation includes sample API requests and responses for different endpoints.
 
 ### Technical Requirements:
-Use Django and Django REST framework to build the API.
-Use token-based authentication for user authentication.
-Use appropriate serializers for data validation and representation.
-Use appropriate views and viewsets for handling CRUD operations on models.
-Use appropriate URL routing for different API endpoints.
-Use appropriate permissions and authentication classes to implement API permissions.
-Follow best practices for RESTful API design and documentation.
+Django and Django REST framework to build the API.
+Token-based authentication for user authentication.
+Appropriate serializers for data validation and representation. 
+Appropriate views and viewsets for handling CRUD operations on models.
+Appropriate URL routing for different API endpoints.
+Appropriate permissions and authentication classes to implement API permissions.
