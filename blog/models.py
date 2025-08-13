@@ -132,6 +132,15 @@ class Post(models.Model):
             return False
         return timezone.now() >= self.scheduled_time
 
+    def save(self, *args, **kwargs):
+        if hasattr(settings, "BLEACH_ALLOWED_TAGS"):
+            self.content = bleach.clean(
+                self.content,
+                tags=settings.BLEACH_ALLOWED_TAGS,
+                attributes=getattr(settings, "BLEACH_ALLOWED_ATTRIBUTES", {}),
+            )
+        super().save(*args, **kwargs)
+
 
 class Comment(models.Model):
     post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name="comments")
@@ -154,6 +163,15 @@ class Comment(models.Model):
 
     def __str__(self):
         return f"Comment by {self.author.email} on {self.post.title}"
+
+    def save(self, *args, **kwargs):
+        if hasattr(settings, "BLEACH_ALLOWED_TAGS"):
+            self.content = bleach.clean(
+                self.content,
+                tags=settings.BLEACH_ALLOWED_TAGS,
+                attributes=getattr(settings, "BLEACH_ALLOWED_ATTRIBUTES", {}),
+            )
+        super().save(*args, **kwargs)
 
 
 class Follow(models.Model):
