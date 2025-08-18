@@ -1,12 +1,11 @@
+import logging
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import NotFound, PermissionDenied
 from django.shortcuts import get_object_or_404
-from django.db import transaction
 from django.db.models import Q, Count, Prefetch
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError
 from django.utils import timezone
 from celery import current_app
 from blog.tasks import publish_scheduled_post
@@ -26,6 +25,7 @@ from blog.serializers import (
 
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 class ProfileViewSet(viewsets.ModelViewSet):
@@ -34,7 +34,7 @@ class ProfileViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = Profile.objects.select_related("user").prefetch_related(
-            "user__followers", "user__following", "user__posts"
+            "user__followers__follower", "user__following__following", "user__posts"
         )
 
         # Search functionality
@@ -86,6 +86,12 @@ class ProfileViewSet(viewsets.ModelViewSet):
         if profile.user != request.user:
             raise PermissionDenied("You can only update your own profile")
         return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        profile = self.get_object()
+        if profile.user != request.user:
+            raise PermissionDenied("You can only delete your own profile")
+        return super().destroy(request, *args, **kwargs)
 
     @action(
         detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated]
@@ -164,7 +170,7 @@ class PostViewSet(viewsets.ModelViewSet):
                 | Q(tags__icontains=search)
             )
 
-        return queryset.filter(status=Post.PUBLISHED).order_by("-created_at")
+        return queryset.filter(status=Post.PUBLISHED).order_by("-published_at")
 
     def get_serializer_class(self):
         if self.action == "retrieve":
@@ -172,15 +178,16 @@ class PostViewSet(viewsets.ModelViewSet):
         return PostSerializer
 
     def perform_create(self, serializer):
+        """Handle post creation with optional scheduling"""
         try:
-            """Handle post creation with optional scheduling"""
             post = serializer.save(author=self.request.user)
 
             # If post is scheduled, create Celery task
             if post.status == Post.SCHEDULED and post.scheduled_time:
                 self._schedule_post_task(post)
-        except IntegrityError as e:
-            raise DRFValidationError("Error creating post. Please try again.")
+        except Exception as e:  # More specific than IntegrityError
+            logger.error(f"Error creating post: {str(e)}")
+            raise DRFValidationError(f"Error creating post: {str(e)}")
 
     def perform_update(self, serializer):
         """Handle post updates with schedule management"""
@@ -200,11 +207,17 @@ class PostViewSet(viewsets.ModelViewSet):
 
     def _schedule_post_task(self, post):
         """Schedule a Celery task for the post"""
-        task = publish_scheduled_post.apply_async(
-            args=[post.id], eta=post.scheduled_time
-        )
-        post.celery_task_id = task.id
-        post.save()
+        try:
+            task = publish_scheduled_post.apply_async(
+                args=[post.id], eta=post.scheduled_time
+            )
+            post.celery_task_id = task.id
+            post.save()
+        except Exception as e:
+            logger.error(f"Failed to schedule post {post.id}: {str(e)}")
+            post.status = Post.FAILED
+            post.save()
+            raise DRFValidationError("Failed to schedule post. Please try again.")
 
     @action(detail=True, methods=["post"])
     def schedule(self, request, pk=None):
@@ -337,12 +350,15 @@ class PostViewSet(viewsets.ModelViewSet):
         posts = (
             Post.objects.filter(Q(author__in=following_users) | Q(author=request.user))
             .select_related("author", "author__profile")
-            .prefetch_related("likes", "comments")
+            .prefetch_related(
+                Prefetch("likes", queryset=Like.objects.select_related("user")),
+                Prefetch("comments", queryset=Comment.objects.select_related("author")),
+            )
             .annotate(
                 likes_count=Count("likes", distinct=True),
                 comments_count=Count("comments", distinct=True),
             )
-            .filter(is_published=True)
+            .filter(status=Post.PUBLISHED)
         ).order_by("-created_at")
 
         page = self.paginate_queryset(posts)
@@ -362,7 +378,7 @@ class PostViewSet(viewsets.ModelViewSet):
             "post_id", flat=True
         )
         posts = (
-            Post.objects.filter(id__in=liked_post_ids, is_published=True)
+            Post.objects.filter(id__in=liked_post_ids, status=Post.PUBLISHED)
             .select_related("author", "author__profile")
             .prefetch_related("likes", "comments")
             .annotate(
@@ -413,18 +429,6 @@ class CommentViewSet(viewsets.ModelViewSet):
         post = get_object_or_404(Post, pk=post_pk)
         return Comment.objects.filter(post=post).select_related("author")
 
-    def perform_create(self, serializer):
-        post_pk = self.kwargs.get("post_pk")
-        post = get_object_or_404(Post, pk=post_pk)
-
-        # Validate parent comment belongs to same post
-        parent_id = self.request.data.get("parent")
-        if parent_id:
-            parent = get_object_or_404(Comment, id=parent_id, post=post)
-            serializer.save(author=self.request.user, post=post, parent=parent)
-        else:
-            serializer.save(author=self.request.user, post=post)
-
     def update(self, request, *args, **kwargs):
         comment = self.get_object()
         if comment.author != request.user:
@@ -442,7 +446,13 @@ class CommentViewSet(viewsets.ModelViewSet):
     )
     def my_comments(self, request):
         """Get all comments by the current user"""
-        post_pk = self.kwargs.get("post_pk")
+        # Extract post_pk from the URL path
+        post_pk = self.request.resolver_match.kwargs.get("post_pk")
+        if not post_pk:
+            return Response(
+                {"error": "Post ID not found"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
         post = get_object_or_404(Post, pk=post_pk)
         comments = (
             Comment.objects.filter(post=post, author=request.user)

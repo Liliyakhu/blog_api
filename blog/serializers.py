@@ -11,14 +11,6 @@ class UserBasicSerializer(serializers.ModelSerializer):
         model = User
         fields = ("id", "email", "first_name", "last_name")
 
-    def get_profile_image(self, obj):
-        request = self.context.get("request")
-        if hasattr(obj, "profile") and obj.profile.profile_image:
-            if request:
-                return request.build_absolute_uri(obj.profile.profile_image.url)
-            return obj.profile.profile_image.url
-        return None
-
 
 class ProfileSerializer(serializers.ModelSerializer):
     user = UserBasicSerializer(read_only=True)
@@ -138,12 +130,6 @@ class PostSerializer(serializers.ModelSerializer):
             "celery_task_id",
         ]
 
-    def validate_scheduled_time(self, value):
-        """Validate scheduled time is in the future"""
-        if value and value <= timezone.now():
-            raise serializers.ValidationError("Scheduled time must be in the future.")
-        return value
-
     def validate(self, data):
         """Validate post data"""
         status = data.get(
@@ -173,6 +159,7 @@ class PostSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
             return Like.objects.filter(user=request.user, post=obj).exists()
+        return False
 
 
 class SchedulePostSerializer(serializers.Serializer):
